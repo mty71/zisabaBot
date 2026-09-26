@@ -1,7 +1,7 @@
 import logging
 import os
 import discord
-from discord.ui import Button, Modal, Select, TextInput, UserSelect, View
+from discord.ui import Button, Modal, MentionableSelect, TextInput, UserSelect, View
 from dotenv import load_dotenv
 
 from .utils import build_status_embed, save_vc_data
@@ -11,7 +11,7 @@ logger = logging.getLogger("DiscordBot")
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "0"))
 
 
-# --- VC参加者宛て DM送信モーダル ---
+# --- VC参加者宛て一括DM送信モーダル ---
 class SendVcDmModal(Modal):
 
     def __init__(self, channel: discord.VoiceChannel):
@@ -57,9 +57,7 @@ class SendVcDmModal(Modal):
             except discord.Forbidden:
                 failed_count += 1
             except Exception as e:
-                logger.error(
-                    f"❌ [VC DM送信エラー] {member.display_name}: {e}"
-                )
+                logger.error(f"❌ [VC DM送信エラー] {member.display_name}: {e}")
                 failed_count += 1
 
         await interaction.followup.send(
@@ -339,7 +337,7 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
-    # ➕ 招待ボタン（直接DM送信型へ修正）
+    # ➕ 招待ボタン（MentionableSelect による招待＋DM送信処理）
     @discord.ui.button(
         label="➕ 招待 (ユーザー/ロール)", style=discord.ButtonStyle.primary, row=1
     )
@@ -347,7 +345,7 @@ class VcControlView(View):
         self, interaction: discord.Interaction, button: Button
     ):
         select_view = View()
-        entity_select = discord.ui.MentionableSelect(
+        entity_select = MentionableSelect(
             placeholder="招待したいユーザーまたはロールを選択",
             min_values=1,
             max_values=1,
@@ -360,7 +358,7 @@ class VcControlView(View):
             user = interaction.user
 
             try:
-                # 1. VCの表示・接続権限を付与
+                # 1. チャンネルのオーバーライド権限を更新（表示・接続の許可）
                 await self.channel.set_permissions(
                     target, view_channel=True, connect=True
                 )
@@ -375,7 +373,7 @@ class VcControlView(View):
                 success_count = 0
                 failed_count = 0
 
-                # 2. ターゲットが Member (個人) の場合
+                # 2-A. 個人の場合: その人に直接DM送信
                 if isinstance(target, discord.Member):
                     if not target.bot:
                         try:
@@ -384,7 +382,7 @@ class VcControlView(View):
                         except discord.Forbidden:
                             failed_count += 1
 
-                # 3. ターゲットが Role (ロール指定) の場合
+                # 2-B. ロールの場合: そのロールに属するメンバー全員へDM送信
                 elif isinstance(target, discord.Role):
                     members = [m for m in target.members if not m.bot]
                     for m in members:
@@ -394,11 +392,17 @@ class VcControlView(View):
                         except discord.Forbidden:
                             failed_count += 1
 
-                # 操作者への送信結果フィードバック
+                target_name = target.name if hasattr(target, "name") else target.display_name
                 result_msg = (
-                    f"✅ **{target.name if hasattr(target, 'name') else target.display_name}** に招待権限を付与しました！\n"
-                    f"📨 DM送信結果: 成功 **{success_count}** 件 / 失敗（受信拒否） **{failed_count}** 件"
+                    f"✅ **{target_name}** に招待権限を付与し、DMで通知を送りました！\n"
+                    f"📨 DM送信結果: 成功 **{success_count}** 件 / 失敗（受信拒否など） **{failed_count}** 件"
                 )
+
+                # パネルの表示を更新（招待されたユーザー/ロールがパネルに即時反映される）
+                ch_id = str(self.channel.id)
+                channel_data = self.cog.vc_data.get(ch_id, {})
+                embed = build_status_embed(self.channel, channel_data, guild)
+                await select_interaction.message.edit(embed=embed, view=self)
 
                 await select_interaction.followup.send(
                     result_msg,

@@ -41,6 +41,16 @@ def build_status_embed(
         [f"<@{m_id}>" for m_id in moderators] if moderators else ["なし"]
     )
 
+    # 💡 VCの権限設定 (overwrites) から直接「view_channel=True」が付与されている対象（招待者）を取得
+    invited_mentions = []
+    for target, overwrite in channel.overwrites.items():
+        if target == guild.default_role or target.id == owner_id or target.id in moderators:
+            continue
+        if overwrite.view_channel is True or overwrite.connect is True:
+            invited_mentions.append(target.mention)
+
+    invited_str = ", ".join(invited_mentions) if invited_mentions else "なし"
+
     embed = discord.Embed(
         title=f"⚙️ {channel.name} コントロールパネル",
         color=discord.Color.blue(),
@@ -63,6 +73,9 @@ def build_status_embed(
     )
     embed.add_field(
         name="🛡️ モデレーター", value=", ".join(mod_mentions), inline=False
+    )
+    embed.add_field(
+        name="📩 招待済みメンバー/ロール", value=invited_str, inline=False
     )
     embed.set_footer(
         text="※メンバーのキックや移動は、Discordの右クリック/長押しメニューから行えます。"
