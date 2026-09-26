@@ -339,7 +339,7 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
-    # ➕ 招待ボタン（指定フォーマットでの出力対応）
+    # ➕ 招待ボタン（直接DM送信型へ修正）
     @discord.ui.button(
         label="➕ 招待 (ユーザー/ロール)", style=discord.ButtonStyle.primary, row=1
     )
@@ -360,21 +360,48 @@ class VcControlView(View):
             user = interaction.user
 
             try:
-                # 権限の付与 (チャンネル表示・接続)
+                # 1. VCの表示・接続権限を付与
                 await self.channel.set_permissions(
                     target, view_channel=True, connect=True
                 )
 
                 vc_link = f"https://discord.com/channels/{guild.id}/{self.channel.id}"
-                invite_msg = (
-                    f"✅ {target.mention} を招待しました！\n\n"
+                dm_content = (
                     f"{user.display_name} さんから {guild.name} の一時VCへ招待されました。\n"
                     f"VC: #{self.channel.name}\n"
                     f"参加リンク: {vc_link}"
                 )
 
+                success_count = 0
+                failed_count = 0
+
+                # 2. ターゲットが Member (個人) の場合
+                if isinstance(target, discord.Member):
+                    if not target.bot:
+                        try:
+                            await target.send(dm_content)
+                            success_count += 1
+                        except discord.Forbidden:
+                            failed_count += 1
+
+                # 3. ターゲットが Role (ロール指定) の場合
+                elif isinstance(target, discord.Role):
+                    members = [m for m in target.members if not m.bot]
+                    for m in members:
+                        try:
+                            await m.send(dm_content)
+                            success_count += 1
+                        except discord.Forbidden:
+                            failed_count += 1
+
+                # 操作者への送信結果フィードバック
+                result_msg = (
+                    f"✅ **{target.name if hasattr(target, 'name') else target.display_name}** に招待権限を付与しました！\n"
+                    f"📨 DM送信結果: 成功 **{success_count}** 件 / 失敗（受信拒否） **{failed_count}** 件"
+                )
+
                 await select_interaction.followup.send(
-                    invite_msg,
+                    result_msg,
                     ephemeral=True,
                 )
             except Exception as e:
@@ -419,7 +446,7 @@ class VcControlView(View):
             )
 
         select_view = View()
-        user_select = discord.ui.UserSelect(
+        user_select = UserSelect(
             placeholder="モデレーターに設定/解除するユーザーを選択",
             max_values=1,
         )
@@ -489,7 +516,7 @@ class VcControlView(View):
             )
 
         select_view = View()
-        user_select = discord.ui.UserSelect(
+        user_select = UserSelect(
             placeholder="新オーナーを選択",
             max_values=1,
         )
