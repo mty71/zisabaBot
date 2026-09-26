@@ -30,7 +30,6 @@ class SendVcDmModal(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        # 現在VCに接続中のメンバー（Botを除く）
         members = [m for m in self.channel.members if not m.bot]
 
         if not members:
@@ -340,7 +339,7 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
-    # ➕ 招待ボタン（ユーザー/ロール選択＆権限付与）
+    # ➕ 招待ボタン（指定フォーマットでの出力対応）
     @discord.ui.button(
         label="➕ 招待 (ユーザー/ロール)", style=discord.ButtonStyle.primary, row=1
     )
@@ -357,12 +356,25 @@ class VcControlView(View):
         async def callback(select_interaction: discord.Interaction):
             await select_interaction.response.defer(ephemeral=True)
             target = entity_select.values[0]
+            guild = interaction.guild
+            user = interaction.user
+
             try:
+                # 権限の付与 (チャンネル表示・接続)
                 await self.channel.set_permissions(
                     target, view_channel=True, connect=True
                 )
+
+                vc_link = f"https://discord.com/channels/{guild.id}/{self.channel.id}"
+                invite_msg = (
+                    f"✅ {target.mention} を招待しました！\n\n"
+                    f"{user.display_name} さんから {guild.name} の一時VCへ招待されました。\n"
+                    f"VC: #{self.channel.name}\n"
+                    f"参加リンク: {vc_link}"
+                )
+
                 await select_interaction.followup.send(
-                    f"✅ {target.mention} にこの部屋の「チャンネルを見る」および「接続」権限を付与しました！",
+                    invite_msg,
                     ephemeral=True,
                 )
             except Exception as e:
@@ -520,7 +532,7 @@ class VcControlView(View):
             await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
-        select_view.add_item(user_select)  # 👈 修正箇所（select_viewを正しく渡す）
+        select_view.add_item(user_select)
         await interaction.response.send_message(
             "新しいオーナーを選択してください:", view=select_view, ephemeral=True
         )
