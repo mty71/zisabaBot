@@ -515,7 +515,7 @@ class VcControlView(View):
             await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
-        select_view.add_item(select_view)
+        select_view.add_item(user_select)
         await interaction.response.send_message(
             "モデレーターを選択してください:", view=select_view, ephemeral=True
         )
@@ -587,7 +587,7 @@ class VcControlView(View):
             await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
-        select_view.add_item(select_view)
+        select_view.add_item(user_select)
         await interaction.response.send_message(
             "新しいオーナーを選択してください:", view=select_view, ephemeral=True
         )
