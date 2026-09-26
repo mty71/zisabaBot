@@ -24,12 +24,12 @@ formatter = logging.Formatter(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# 1. コンソール出力ハンドラ
+# コンソール出力ハンドラ
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-# 2. ファイル保存ハンドラ (LOG_TO_FILE=True の場合)
+# ファイル保存ハンドラ (LOG_TO_FILE=True の場合)
 if LOG_TO_FILE:
     os.makedirs("./logs", exist_ok=True)
     file_handler = logging.FileHandler(
@@ -68,6 +68,7 @@ bot = CustomBot(command_prefix=PREFIX, intents=intents)
 
 
 def get_cog_modules():
+    """cogs/ 直下の .py と サブフォルダ内の vc_main.py 等のエントリーポイントを検出"""
     modules = []
     for root, _, files in os.walk("./cogs"):
         for filename in files:
@@ -133,10 +134,11 @@ async def cog_watcher():
 async def on_ready():
     logger.info(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
     logger.info(f"🔧 デバッグモード: {'ON' if DEBUG_MODE else 'OFF'}")
-    logger.info(f"📝 ログファイル保存: {'ON (logs/bot.log)' if LOG_TO_FILE else 'OFF'}")
+    logger.info(
+        f"📝 ログファイル保存: {'ON (logs/bot.log)' if LOG_TO_FILE else 'OFF'}"
+    )
 
 
-# グローバルイベントテスト用
 @bot.event
 async def on_voice_state_update(member, before, after):
     logger.debug(

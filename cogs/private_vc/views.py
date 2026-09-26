@@ -11,6 +11,67 @@ logger = logging.getLogger("DiscordBot")
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "0"))
 
 
+# --- VC参加者宛て DM送信モーダル ---
+class SendVcDmModal(Modal):
+
+    def __init__(self, channel: discord.VoiceChannel):
+        super().__init__(title="📩 VC参加メンバーへDM送信")
+        self.channel = channel
+
+        self.message_input = TextInput(
+            label="送信するメッセージを入力してください",
+            style=discord.TextStyle.paragraph,
+            placeholder="例: 次のゲームの部屋番号は 1234 です！",
+            max_length=1000,
+            required=True,
+        )
+        self.add_item(self.message_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        # 現在VCに接続中のメンバー（Botを除く）
+        members = [m for m in self.channel.members if not m.bot]
+
+        if not members:
+            return await interaction.followup.send(
+                "❌ 現在ボイスチャンネルに参加しているメンバーがいません。",
+                ephemeral=True,
+            )
+
+        embed = discord.Embed(
+            title=f"📩 {self.channel.name} からの通知",
+            description=self.message_input.value,
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(
+            text=f"送信者: {interaction.user.display_name} | サーバー: {interaction.guild.name}"
+        )
+
+        success_count = 0
+        failed_count = 0
+
+        for member in members:
+            try:
+                await member.send(embed=embed)
+                success_count += 1
+            except discord.Forbidden:
+                failed_count += 1
+            except Exception as e:
+                logger.error(
+                    f"❌ [VC DM送信エラー] {member.display_name}: {e}"
+                )
+                failed_count += 1
+
+        await interaction.followup.send(
+            f"📨 **DM送信結果**\n"
+            f"対象VC: {self.channel.name}\n"
+            f"・成功: **{success_count}** 名\n"
+            f"・失敗（受信拒否など）: **{failed_count}** 名",
+            ephemeral=True,
+        )
+
+
 # --- ルーム作成モーダル ---
 class CreateRoomModal(Modal):
 
@@ -279,7 +340,7 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
-    # ➕ 招待ボタン（deferを追加してタイムアウトエラーを解消）
+    # ➕ 招待ボタン（ユーザー/ロール選択＆権限付与）
     @discord.ui.button(
         label="➕ 招待 (ユーザー/ロール)", style=discord.ButtonStyle.primary, row=1
     )
@@ -294,7 +355,6 @@ class VcControlView(View):
         )
 
         async def callback(select_interaction: discord.Interaction):
-            # 選択時のレスポンス保留（タイムアウト防止）
             await select_interaction.response.defer(ephemeral=True)
             target = entity_select.values[0]
             try:
@@ -302,7 +362,7 @@ class VcControlView(View):
                     target, view_channel=True, connect=True
                 )
                 await select_interaction.followup.send(
-                    f"✅ {target.mention} にこの部屋の「チャンネルを見る」権限を付与しました！",
+                    f"✅ {target.mention} にこの部屋の「チャンネルを見る」および「接続」権限を付与しました！",
                     ephemeral=True,
                 )
             except Exception as e:
@@ -318,8 +378,17 @@ class VcControlView(View):
             "招待する対象を選択してください:", view=select_view, ephemeral=True
         )
 
+    # 📩 VC参加者宛て一括DM送信ボタン
     @discord.ui.button(
-        label="🛡️ モデレーター設定", style=discord.ButtonStyle.primary, row=1
+        label="📩 参加者にDM送信", style=discord.ButtonStyle.success, row=1
+    )
+    async def send_vc_dm(
+        self, interaction: discord.Interaction, button: Button
+    ):
+        await interaction.response.send_modal(SendVcDmModal(channel=self.channel))
+
+    @discord.ui.button(
+        label="🛡️ モデレーター設定", style=discord.ButtonStyle.primary, row=2
     )
     async def manage_moderator(
         self, interaction: discord.Interaction, button: Button
@@ -381,7 +450,7 @@ class VcControlView(View):
         )
 
     @discord.ui.button(
-        label="👑 オーナー譲渡", style=discord.ButtonStyle.danger, row=1
+        label="👑 オーナー譲渡", style=discord.ButtonStyle.danger, row=2
     )
     async def transfer_ownership(
         self, interaction: discord.Interaction, button: Button
@@ -451,7 +520,7 @@ class VcControlView(View):
             await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
-        select_view.add_item(user_select)
+        select_view.add_item(user_select)  # 👈 修正箇所（select_viewを正しく渡す）
         await interaction.response.send_message(
             "新しいオーナーを選択してください:", view=select_view, ephemeral=True
         )
