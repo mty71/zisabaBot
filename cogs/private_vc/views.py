@@ -11,7 +11,7 @@ logger = logging.getLogger("DiscordBot")
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "0"))
 
 
-# --- VC招待者・権限保持者宛て一括DM送信モーダル ---
+# --- VC参加者宛て一括DM送信モーダル ---
 class SendVcDmModal(Modal):
 
     def __init__(self, channel: discord.VoiceChannel):
@@ -40,11 +40,9 @@ class SendVcDmModal(Modal):
 
         # 2. 権限(overwrites)に登録されているユーザーID / ロールからメンバーを抽出
         for target, overwrite in self.channel.overwrites.items():
-            # default_role (everyone) は除外
             if target == guild.default_role:
                 continue
 
-            # 表示または接続権限が許可(True)されている対象を抽出
             if overwrite.view_channel is True or overwrite.connect is True:
                 if isinstance(target, discord.Member):
                     if not target.bot:
@@ -74,7 +72,6 @@ class SendVcDmModal(Modal):
         success_count = 0
         failed_count = 0
 
-        # 重複なく全対象へDM送信
         for member in target_members:
             try:
                 await member.send(embed=embed)
@@ -368,16 +365,16 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
-    # ➕ 招待ボタン
+    # ➕ 招待 / 解除 トグルボタン（案2適用）
     @discord.ui.button(
-        label="➕ 招待 (ユーザー/ロール)", style=discord.ButtonStyle.primary, row=1
+        label="➕ 招待 / 解除", style=discord.ButtonStyle.primary, row=1
     )
-    async def invite_target(
+    async def toggle_invite_target(
         self, interaction: discord.Interaction, button: Button
     ):
         select_view = View()
         entity_select = MentionableSelect(
-            placeholder="招待したいユーザーまたはロールを選択",
+            placeholder="招待または解除したいユーザー/ロールを選択",
             min_values=1,
             max_values=1,
         )
@@ -388,62 +385,72 @@ class VcControlView(View):
             guild = interaction.guild
             user = interaction.user
 
-            try:
-                # 1. チャンネルのオーバーライド権限を更新（表示・接続の許可）
-                await self.channel.set_permissions(
-                    target, view_channel=True, connect=True
-                )
+            target_name = target.name if isinstance(target, discord.Role) else target.display_name
+            current_overwrite = self.channel.overwrites_for(target)
 
-                vc_link = f"https://discord.com/channels/{guild.id}/{self.channel.id}"
-                dm_content = (
-                    f"{user.display_name} さんから {guild.name} の一時VCへ招待されました。\n"
-                    f"VC: #{self.channel.name}\n"
-                    f"参加リンク: {vc_link}"
-                )
+            # 💡 判定: すでに権限が付与されている場合は「招待解除」
+            if current_overwrite.view_channel is True or current_overwrite.connect is True:
+                try:
+                    await self.channel.set_permissions(target, overwrite=None)
+                    result_msg = f"🗑️ **{target_name}** の招待権限を解除しました。"
+                except Exception as e:
+                    logger.error(f"❌ 招待解除処理エラー: {e}", exc_info=True)
+                    return await select_interaction.followup.send(
+                        "❌ 招待解除処理中にエラーが発生しました。", ephemeral=True
+                    )
+            # 💡 未招待の場合は「招待追加＆DM送信」
+            else:
+                try:
+                    await self.channel.set_permissions(
+                        target, view_channel=True, connect=True
+                    )
 
-                success_count = 0
-                failed_count = 0
+                    vc_link = f"https://discord.com/channels/{guild.id}/{self.channel.id}"
+                    dm_content = (
+                        f"{user.display_name} さんから {guild.name} の一時VCへ招待されました。\n"
+                        f"VC: #{self.channel.name}\n"
+                        f"参加リンク: {vc_link}"
+                    )
 
-                # 2-A. 個人の場合: VCに参加していなくてもDM送信
-                if isinstance(target, discord.Member):
-                    if not target.bot:
-                        try:
-                            await target.send(dm_content)
-                            success_count += 1
-                        except discord.Forbidden:
-                            failed_count += 1
+                    success_count = 0
+                    failed_count = 0
 
-                # 2-B. ロールの場合: VCに参加していなくてもそのロールを持つ全員へDM送信
-                elif isinstance(target, discord.Role):
-                    members = [m for m in target.members if not m.bot]
-                    for m in members:
-                        try:
-                            await m.send(dm_content)
-                            success_count += 1
-                        except discord.Forbidden:
-                            failed_count += 1
+                    if isinstance(target, discord.Member):
+                        if not target.bot:
+                            try:
+                                await target.send(dm_content)
+                                success_count += 1
+                            except discord.Forbidden:
+                                failed_count += 1
+                    elif isinstance(target, discord.Role):
+                        members = [m for m in target.members if not m.bot]
+                        for m in members:
+                            try:
+                                await m.send(dm_content)
+                                success_count += 1
+                            except discord.Forbidden:
+                                failed_count += 1
 
-                target_name = target.name if isinstance(target, discord.Role) else target.display_name
-                result_msg = (
-                    f"✅ **{target_name}** に招待権限を付与し、DMで通知を送りました！\n"
-                    f"📨 DM送信結果: 成功 **{success_count}** 件 / 失敗（受信拒否など） **{failed_count}** 件"
-                )
+                    result_msg = (
+                        f"✅ **{target_name}** に招待権限を付与し、DMで通知を送りました！\n"
+                        f"📨 DM送信結果: 成功 **{success_count}** 件 / 失敗（受信拒否など） **{failed_count}** 件"
+                    )
+                except Exception as e:
+                    logger.error(f"❌ 招待処理エラー: {e}", exc_info=True)
+                    return await select_interaction.followup.send(
+                        "❌ 招待処理中にエラーが発生しました。", ephemeral=True
+                    )
 
-                await select_interaction.followup.send(
-                    result_msg,
-                    ephemeral=True,
-                )
-            except Exception as e:
-                logger.error(f"❌ 招待処理エラー: {e}", exc_info=True)
-                await select_interaction.followup.send(
-                    "❌ 招待処理中にエラーが発生しました。Botの権限を確認してください。",
-                    ephemeral=True,
-                )
+            await select_interaction.followup.send(
+                result_msg, ephemeral=True
+            )
 
         entity_select.callback = callback
         select_view.add_item(entity_select)
         await interaction.response.send_message(
-            "招待する対象を選択してください:", view=select_view, ephemeral=True
+            "対象を選択してください（招待済みなら解除、未招待なら追加されます）:",
+            view=select_view,
+            ephemeral=True,
         )
 
     # 📩 VC参加者・権限保持者宛て一括DM送信ボタン
