@@ -268,10 +268,15 @@ class VcControlView(View):
         embed = build_status_embed(
             self.channel, channel_data, interaction.guild
         )
-        await interaction.message.edit(embed=embed, view=self)
-        await interaction.response.send_message(
-            response_message, ephemeral=True
-        )
+        try:
+            await interaction.message.edit(embed=embed, view=self)
+            await interaction.response.send_message(
+                response_message, ephemeral=True
+            )
+        except discord.NotFound:
+            await interaction.response.send_message(
+                response_message, ephemeral=True
+            )
 
     @discord.ui.button(
         label="💾 部屋を保存/解除", style=discord.ButtonStyle.secondary, row=0
@@ -337,7 +342,7 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
-    # ➕ 招待ボタン（MentionableSelect による招待＋DM送信処理）
+    # ➕ 招待ボタン (安全な返信構造へ修正)
     @discord.ui.button(
         label="➕ 招待 (ユーザー/ロール)", style=discord.ButtonStyle.primary, row=1
     )
@@ -373,7 +378,7 @@ class VcControlView(View):
                 success_count = 0
                 failed_count = 0
 
-                # 2-A. 個人の場合: その人に直接DM送信
+                # 2-A. 個人の場合: VCに参加していなくてもDM送信
                 if isinstance(target, discord.Member):
                     if not target.bot:
                         try:
@@ -382,7 +387,7 @@ class VcControlView(View):
                         except discord.Forbidden:
                             failed_count += 1
 
-                # 2-B. ロールの場合: そのロールに属するメンバー全員へDM送信
+                # 2-B. ロールの場合: VCに参加していなくてもそのロールを持つ全員へDM送信
                 elif isinstance(target, discord.Role):
                     members = [m for m in target.members if not m.bot]
                     for m in members:
@@ -392,22 +397,12 @@ class VcControlView(View):
                         except discord.Forbidden:
                             failed_count += 1
 
-                target_name = target.name if hasattr(target, "name") else target.display_name
+                target_name = target.name if isinstance(target, discord.Role) else target.display_name
                 result_msg = (
                     f"✅ **{target_name}** に招待権限を付与し、DMで通知を送りました！\n"
                     f"📨 DM送信結果: 成功 **{success_count}** 件 / 失敗（受信拒否など） **{failed_count}** 件"
                 )
-
-                # パネルの表示を更新（招待されたユーザー/ロールがパネルに即時反映される）
-                ch_id = str(self.channel.id)
-                channel_data = self.cog.vc_data.get(ch_id, {})
-                embed = build_status_embed(self.channel, channel_data, guild)
-                await select_interaction.message.edit(embed=embed, view=self)
-
-                await select_interaction.followup.send(
-                    result_msg,
-                    ephemeral=True,
-                )
+                
             except Exception as e:
                 logger.error(f"❌ 招待処理エラー: {e}", exc_info=True)
                 await select_interaction.followup.send(
@@ -480,14 +475,10 @@ class VcControlView(View):
             self.cog.vc_data[ch_id] = channel_data
             save_vc_data(self.cog.vc_data)
 
-            embed = build_status_embed(
-                self.channel, channel_data, select_interaction.guild
-            )
-            await select_interaction.message.edit(embed=embed, view=self)
             await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
-        select_view.add_item(user_select)
+        select_view.add_item(select_view)
         await interaction.response.send_message(
             "モデレーターを選択してください:", view=select_view, ephemeral=True
         )
@@ -556,14 +547,10 @@ class VcControlView(View):
                 pass
 
             msg = f"👑 オーナー権限を <@{current_owner_id}> から {new_owner.mention} に譲渡しました。"
-            embed = build_status_embed(
-                self.channel, channel_data, select_interaction.guild
-            )
-            await select_interaction.message.edit(embed=embed, view=self)
             await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
-        select_view.add_item(user_select)
+        select_view.add_item(select_view)
         await interaction.response.send_message(
             "新しいオーナーを選択してください:", view=select_view, ephemeral=True
         )
