@@ -11,17 +11,17 @@ logger = logging.getLogger("DiscordBot")
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "0"))
 
 
-# --- VC参加者宛て一括DM送信モーダル ---
+# --- VC招待者・権限保持者宛て一括DM送信モーダル ---
 class SendVcDmModal(Modal):
 
     def __init__(self, channel: discord.VoiceChannel):
-        super().__init__(title="📩 VC参加メンバーへDM送信")
+        super().__init__(title="📩 VC関係者へDM一括送信")
         self.channel = channel
 
         self.message_input = TextInput(
             label="送信するメッセージを入力してください",
             style=discord.TextStyle.paragraph,
-            placeholder="例: 次のゲームの部屋番号は 1234 です！",
+            placeholder="例: パスワードは 1234 です！接続してください！",
             max_length=1000,
             required=True,
         )
@@ -30,11 +30,33 @@ class SendVcDmModal(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        members = [m for m in self.channel.members if not m.bot]
+        guild = interaction.guild
+        target_members = set()
 
-        if not members:
+        # 1. 現在VCに接続中のメンバーを追加
+        for m in self.channel.members:
+            if not m.bot:
+                target_members.add(m)
+
+        # 2. 権限(overwrites)に登録されているユーザーID / ロールからメンバーを抽出
+        for target, overwrite in self.channel.overwrites.items():
+            # default_role (everyone) は除外
+            if target == guild.default_role:
+                continue
+
+            # 表示または接続権限が許可(True)されている対象を抽出
+            if overwrite.view_channel is True or overwrite.connect is True:
+                if isinstance(target, discord.Member):
+                    if not target.bot:
+                        target_members.add(target)
+                elif isinstance(target, discord.Role):
+                    for m in target.members:
+                        if not m.bot:
+                            target_members.add(m)
+
+        if not target_members:
             return await interaction.followup.send(
-                "❌ 現在ボイスチャンネルに参加しているメンバーがいません。",
+                "❌ DMの送信対象となるメンバー（VC参加者または招待権限持ち）が見つかりません。",
                 ephemeral=True,
             )
 
@@ -43,14 +65,17 @@ class SendVcDmModal(Modal):
             description=self.message_input.value,
             color=discord.Color.blue(),
         )
+        vc_link = f"https://discord.com/channels/{guild.id}/{self.channel.id}"
+        embed.add_field(name="🔗 VC参加リンク", value=vc_link, inline=False)
         embed.set_footer(
-            text=f"送信者: {interaction.user.display_name} | サーバー: {interaction.guild.name}"
+            text=f"送信者: {interaction.user.display_name} | サーバー: {guild.name}"
         )
 
         success_count = 0
         failed_count = 0
 
-        for member in members:
+        # 重複なく全対象へDM送信
+        for member in target_members:
             try:
                 await member.send(embed=embed)
                 success_count += 1
@@ -61,10 +86,11 @@ class SendVcDmModal(Modal):
                 failed_count += 1
 
         await interaction.followup.send(
-            f"📨 **DM送信結果**\n"
+            f"📨 **DM一括送信結果**\n"
             f"対象VC: {self.channel.name}\n"
-            f"・成功: **{success_count}** 名\n"
-            f"・失敗（受信拒否など）: **{failed_count}** 名",
+            f"・送信対象数: **{len(target_members)}** 名\n"
+            f"・送信成功: **{success_count}** 名\n"
+            f"・送信失敗（受信拒否など）: **{failed_count}** 名",
             ephemeral=True,
         )
 
@@ -342,7 +368,7 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
-    # ➕ 招待ボタン (安全な返信構造へ修正)
+    # ➕ 招待ボタン
     @discord.ui.button(
         label="➕ 招待 (ユーザー/ロール)", style=discord.ButtonStyle.primary, row=1
     )
@@ -402,7 +428,11 @@ class VcControlView(View):
                     f"✅ **{target_name}** に招待権限を付与し、DMで通知を送りました！\n"
                     f"📨 DM送信結果: 成功 **{success_count}** 件 / 失敗（受信拒否など） **{failed_count}** 件"
                 )
-                
+
+                await select_interaction.followup.send(
+                    result_msg,
+                    ephemeral=True,
+                )
             except Exception as e:
                 logger.error(f"❌ 招待処理エラー: {e}", exc_info=True)
                 await select_interaction.followup.send(
@@ -416,7 +446,7 @@ class VcControlView(View):
             "招待する対象を選択してください:", view=select_view, ephemeral=True
         )
 
-    # 📩 VC参加者宛て一括DM送信ボタン
+    # 📩 VC参加者・権限保持者宛て一括DM送信ボタン
     @discord.ui.button(
         label="📩 参加者にDM送信", style=discord.ButtonStyle.success, row=1
     )
