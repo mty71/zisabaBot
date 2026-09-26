@@ -1,11 +1,13 @@
+import logging
 import os
 import discord
-from discord.ui import View, Button, Modal, TextInput, Select, UserSelect
+from discord.ui import Button, Modal, Select, TextInput, UserSelect, View
 from dotenv import load_dotenv
 
 from .utils import build_status_embed, save_vc_data
 
 load_dotenv()
+logger = logging.getLogger("DiscordBot")
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "0"))
 
 
@@ -38,7 +40,6 @@ class CreateRoomModal(Modal):
                 ephemeral=True,
             )
 
-        # 1. 作成者本人には「チャンネルを見る = ON」「接続 = ON」を明示
         overwrites = {
             member: discord.PermissionOverwrite(
                 view_channel=True,
@@ -50,7 +51,6 @@ class CreateRoomModal(Modal):
             )
         }
 
-        # 2. 非表示モードの場合、@everyone は「チャンネルを見る = OFF」「接続 = OFF」
         if self.is_hidden:
             overwrites[guild.default_role] = discord.PermissionOverwrite(
                 view_channel=False, connect=False
@@ -66,7 +66,7 @@ class CreateRoomModal(Modal):
                 overwrites=overwrites,
             )
         except Exception as e:
-            print(f"❌ チャンネル作成失敗: {e}")
+            logger.error(f"❌ チャンネル作成失敗: {e}", exc_info=True)
             return await interaction.followup.send(
                 "❌ チャンネル作成に失敗しました。", ephemeral=True
             )
@@ -279,6 +279,7 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
+    # ➕ 招待ボタン（deferを追加してタイムアウトエラーを解消）
     @discord.ui.button(
         label="➕ 招待 (ユーザー/ロール)", style=discord.ButtonStyle.primary, row=1
     )
@@ -293,14 +294,23 @@ class VcControlView(View):
         )
 
         async def callback(select_interaction: discord.Interaction):
+            # 選択時のレスポンス保留（タイムアウト防止）
+            await select_interaction.response.defer(ephemeral=True)
             target = entity_select.values[0]
-            await self.channel.set_permissions(
-                target, view_channel=True, connect=True
-            )
-            await select_interaction.response.send_message(
-                f"✅ {target.mention} にこの部屋の「チャンネルを見る」権限を付与しました！",
-                ephemeral=True,
-            )
+            try:
+                await self.channel.set_permissions(
+                    target, view_channel=True, connect=True
+                )
+                await select_interaction.followup.send(
+                    f"✅ {target.mention} にこの部屋の「チャンネルを見る」権限を付与しました！",
+                    ephemeral=True,
+                )
+            except Exception as e:
+                logger.error(f"❌ 招待処理エラー: {e}", exc_info=True)
+                await select_interaction.followup.send(
+                    "❌ 招待処理中にエラーが発生しました。Botの権限を確認してください。",
+                    ephemeral=True,
+                )
 
         entity_select.callback = callback
         select_view.add_item(entity_select)
@@ -334,6 +344,7 @@ class VcControlView(View):
         )
 
         async def callback(select_interaction: discord.Interaction):
+            await select_interaction.response.defer(ephemeral=True)
             target = user_select.values[0]
             moderators = channel_data.get("moderators", [])
 
@@ -357,7 +368,11 @@ class VcControlView(View):
             self.cog.vc_data[ch_id] = channel_data
             save_vc_data(self.cog.vc_data)
 
-            await self.update_panel(select_interaction, msg)
+            embed = build_status_embed(
+                self.channel, channel_data, select_interaction.guild
+            )
+            await select_interaction.message.edit(embed=embed, view=self)
+            await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
         select_view.add_item(user_select)
@@ -399,6 +414,7 @@ class VcControlView(View):
         )
 
         async def callback(select_interaction: discord.Interaction):
+            await select_interaction.response.defer(ephemeral=True)
             new_owner = user_select.values[0]
             old_owner = interaction.guild.get_member(current_owner_id)
 
@@ -428,7 +444,11 @@ class VcControlView(View):
                 pass
 
             msg = f"👑 オーナー権限を <@{current_owner_id}> から {new_owner.mention} に譲渡しました。"
-            await self.update_panel(select_interaction, msg)
+            embed = build_status_embed(
+                self.channel, channel_data, select_interaction.guild
+            )
+            await select_interaction.message.edit(embed=embed, view=self)
+            await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
         select_view.add_item(user_select)
