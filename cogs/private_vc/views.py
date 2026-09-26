@@ -347,9 +347,9 @@ class VcControlView(View):
         self, interaction: discord.Interaction, button: Button
     ):
         select_view = View()
-        entity_select = Select(
+        entity_select = discord.ui.MentionableSelect(
             placeholder="招待したいユーザーまたはロールを選択",
-            select_type=discord.ComponentType.mentionable_select,
+            min_values=1,
             max_values=1,
         )
 
@@ -419,7 +419,7 @@ class VcControlView(View):
             )
 
         select_view = View()
-        user_select = UserSelect(
+        user_select = discord.ui.UserSelect(
             placeholder="モデレーターに設定/解除するユーザーを選択",
             max_values=1,
         )
@@ -489,7 +489,7 @@ class VcControlView(View):
             )
 
         select_view = View()
-        user_select = UserSelect(
+        user_select = discord.ui.UserSelect(
             placeholder="新オーナーを選択",
             max_values=1,
         )
