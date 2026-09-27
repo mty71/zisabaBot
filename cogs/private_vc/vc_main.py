@@ -26,6 +26,7 @@ def get_env_id(key: str) -> int:
 
 CREATE_CHANNEL_ID = get_env_id("CREATE_CHANNEL_ID")
 CATEGORY_ID = get_env_id("CATEGORY_ID")
+BASE_ROLE_ID = get_env_id("BASE_ROLE_ID")
 
 
 class PrivateVC(commands.Cog):
@@ -179,6 +180,7 @@ class PrivateVC(commands.Cog):
                 )
                 return
 
+            # 作成者個人の権限設定
             overwrites = {
                 member: discord.PermissionOverwrite(
                     view_channel=True,
@@ -187,8 +189,24 @@ class PrivateVC(commands.Cog):
                     mute_members=True,
                     deafen_members=True,
                     move_members=True,
+                ),
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False,
+                    connect=False
                 )
             }
+
+            # 💡 基準となる自動ロール（仕切りロール）へアクセス権限を付与
+            base_role = guild.get_role(BASE_ROLE_ID)
+            if not base_role:
+                base_role = discord.utils.get(guild.roles, name="---この以下自動ロール---")
+
+            if base_role:
+                overwrites[base_role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    connect=True
+                )
+                logger.debug(f"🔑 [VC作成権限設定] 自動ロール「{base_role.name}」にアクセス権限を付与しました。")
 
             try:
                 channel = await guild.create_voice_channel(
