@@ -34,6 +34,18 @@ def save_role_data(data):
         logger.error(f"❌ [SelfRoleManager] ロールデータの保存失敗: {e}")
 
 
+def parse_color(color_code: str) -> discord.Color:
+    try:
+        if color_code.startswith("#"):
+            return discord.Color(int(color_code[1:], 16))
+        else:
+            return getattr(
+                discord.Color, color_code.lower(), lambda: discord.Color.default()
+            )()
+    except Exception:
+        return discord.Color.default()
+
+
 class SelfRoleManager(commands.Cog):
 
     def __init__(self, bot):
@@ -44,7 +56,24 @@ class SelfRoleManager(commands.Cog):
         name="myrole", description="自分が所有・管理する専用ロールの操作"
     )
 
-    # 1. 専用ロールの作成 (指定された仕切りロールの直下に作成)
+    # 自分が作成したロールのみを動的に選択候補へ表示する共通関数
+    async def user_created_roles_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        self.role_data = load_role_data()
+        user_id = interaction.user.id
+        guild = interaction.guild
+
+        choices = []
+        for role_id_str, data in self.role_data.items():
+            if data.get("owner_id") == user_id or interaction.user.guild_permissions.administrator:
+                role = guild.get_role(int(role_id_str))
+                if role and current.lower() in role.name.lower():
+                    choices.append(app_commands.Choice(name=role.name, value=role_id_str))
+
+        return choices[:25]
+
+    # 1. 専用ロールの作成 (仕切りロール直下)
     @role_group.command(name="create", description="仕切りロールの直下に専用ロールを作成します")
     @app_commands.describe(
         name="作成するロール名",
@@ -61,7 +90,6 @@ class SelfRoleManager(commands.Cog):
             f"🔍 [MyRole Create] User: {user.display_name} | RoleName: {name} | Color: {color_code}"
         )
 
-        # 基準ロールの特定 (ID一致、または名前「---この以下自動ロール---」で検索)
         base_role = guild.get_role(BASE_ROLE_ID)
         if not base_role:
             base_role = discord.utils.get(guild.roles, name="---この以下自動ロール---")
@@ -73,36 +101,18 @@ class SelfRoleManager(commands.Cog):
                 ephemeral=True,
             )
 
-        # カラーコードの変換
-        try:
-            if color_code.startswith("#"):
-                color = discord.Color(int(color_code[1:], 16))
-            else:
-                color = getattr(
-                    discord.Color, color_code.lower(), lambda: discord.Color.default()
-                )()
-        except Exception:
-            color = discord.Color.default()
-
-        # 基準ロールの1つ下の位置を算出
+        color = parse_color(color_code)
         target_position = max(1, base_role.position - 1)
 
-        logger.debug(
-            f"📊 [MyRole Position] BaseRole: {base_role.name} (Pos: {base_role.position}) -> TargetPos: {target_position}"
-        )
-
         try:
-            # ロール作成
             new_role = await guild.create_role(
                 name=name,
                 color=color,
                 reason=f"ユーザー {user.display_name} による専用ロール作成",
             )
 
-            # 位置を仕切りロールの直下に設定
             await new_role.edit(position=target_position)
 
-            # 作成データとして保存
             str_role_id = str(new_role.id)
             self.role_data[str_role_id] = {
                 "owner_id": user.id,
@@ -110,11 +120,10 @@ class SelfRoleManager(commands.Cog):
             }
             save_role_data(self.role_data)
 
-            # 作成者本人にロールを付与
             await user.add_roles(new_role)
 
             logger.info(
-                f"✅ [MyRole 作成完了] Role: {new_role.name} (ID: {new_role.id}) | Owner: {user.display_name} | Pos: {target_position}"
+                f"✅ [MyRole 作成完了] Role: {new_role.name} (ID: {new_role.id}) | Owner: {user.display_name}"
             )
 
             await interaction.followup.send(
@@ -131,25 +140,111 @@ class SelfRoleManager(commands.Cog):
             logger.error(f"❌ [MyRole Create Error]: {e}", exc_info=True)
             await interaction.followup.send(f"❌ エラーが発生しました: {e}", ephemeral=True)
 
-    # 2. 削除コマンド用 Autocomplete (自分が作成したロールのみ候補に表示)
-    async def user_created_roles_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        self.role_data = load_role_data()
-        user_id = interaction.user.id
+    # 2. 自分が作成したロールにメンバーを追加
+    @role_group.command(name="add_member", description="自分が作成したロールに指定メンバーを追加します")
+    @app_commands.describe(role_id="追加先のロール", member="追加したいメンバー")
+    @app_commands.autocomplete(role_id=user_created_roles_autocomplete)
+    async def add_member(
+        self, interaction: discord.Interaction, role_id: str, member: discord.Member
+    ):
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        choices = []
-        for role_id_str, data in self.role_data.items():
-            # 自分が作成したロール（または管理者）のみを抽出
-            if data.get("owner_id") == user_id or interaction.user.guild_permissions.administrator:
-                role = guild.get_role(int(role_id_str))
-                if role and current.lower() in role.name.lower():
-                    choices.append(app_commands.Choice(name=role.name, value=role_id_str))
+        role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+        if not role or role_id not in self.role_data:
+            return await interaction.followup.send(
+                "❌ あなたが作成した有効なロールを選択してください。", ephemeral=True
+            )
 
-        return choices[:25]  # Discordの仕様上、候補は最大25個
+        try:
+            await member.add_roles(role, reason=f"管理所有者 {interaction.user.display_name} による付与")
+            logger.info(
+                f"👤 [MyRole Member Add] Role: {role.name} -> Target: {member.display_name}"
+            )
+            await interaction.followup.send(
+                f"✅ **{member.display_name}** にロール **{role.name}** を付与しました！", ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"❌ [MyRole AddMember Error]: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ ロール付与に失敗しました: {e}", ephemeral=True)
 
-    # 3. 自分が作ったロールの削除
+    # 3. 自分が作成したロールからメンバーを削除
+    @role_group.command(name="remove_member", description="自分が作成したロールから指定メンバーを外します")
+    @app_commands.describe(role_id="対象のロール", member="外したいメンバー")
+    @app_commands.autocomplete(role_id=user_created_roles_autocomplete)
+    async def remove_member(
+        self, interaction: discord.Interaction, role_id: str, member: discord.Member
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+        if not role or role_id not in self.role_data:
+            return await interaction.followup.send(
+                "❌ あなたが作成した有効なロールを選択してください。", ephemeral=True
+            )
+
+        try:
+            await member.remove_roles(role, reason=f"管理所有者 {interaction.user.display_name} による剥奪")
+            logger.info(
+                f"🗑️ [MyRole Member Remove] Role: {role.name} -> Target: {member.display_name}"
+            )
+            await interaction.followup.send(
+                f"🗑️ **{member.display_name}** からロール **{role.name}** を外しました。", ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"❌ [MyRole RemoveMember Error]: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ ロール削除に失敗しました: {e}", ephemeral=True)
+
+    # 4. 自分が作成したロールの設定変更 (名前・色の編集)
+    @role_group.command(name="edit", description="自分が作成したロールの名前や色を変更します")
+    @app_commands.describe(
+        role_id="編集するロール",
+        new_name="新しいロール名 (変更しない場合は空欄)",
+        new_color="新しいカラーコード (例: #00FF00 / 変更しない場合は空欄)"
+    )
+    @app_commands.autocomplete(role_id=user_created_roles_autocomplete)
+    async def edit_role(
+        self,
+        interaction: discord.Interaction,
+        role_id: str,
+        new_name: str | None = None,
+        new_color: str | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        role = guild.get_role(int(role_id)) if role_id.isdigit() else None
+        if not role or role_id not in self.role_data:
+            return await interaction.followup.send(
+                "❌ あなたが作成した有効なロールを選択してください。", ephemeral=True
+            )
+
+        if not new_name and not new_color:
+            return await interaction.followup.send(
+                "⚠️ 変更する「新しい名前」または「新しい色」を入力してください。", ephemeral=True
+            )
+
+        kwargs = {}
+        if new_name:
+            kwargs["name"] = new_name
+        if new_color:
+            kwargs["color"] = parse_color(new_color)
+
+        try:
+            old_name = role.name
+            await role.edit(**kwargs, reason=f"所有者 {interaction.user.display_name} による設定変更")
+            logger.info(
+                f"✏️ [MyRole Edit] Role: {old_name} -> NewSettings: {kwargs}"
+            )
+            await interaction.followup.send(
+                f"✏️ ロール **{old_name}** の設定を変更しました！", ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"❌ [MyRole Edit Error]: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ 設定変更に失敗しました: {e}", ephemeral=True)
+
+    # 5. 自分が作成したロールの削除
     @role_group.command(name="delete", description="自分が作成した専用ロールを削除します")
     @app_commands.describe(role_id="削除する自分が作成したロール")
     @app_commands.autocomplete(role_id=user_created_roles_autocomplete)
@@ -159,7 +254,6 @@ class SelfRoleManager(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        # IDからロールオブジェクトを取得
         role = guild.get_role(int(role_id)) if role_id.isdigit() else None
         if not role:
             return await interaction.followup.send(
