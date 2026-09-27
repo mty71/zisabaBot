@@ -73,7 +73,7 @@ class SelfRoleManager(commands.Cog):
 
         return choices[:25]
 
-    # 1. 専用ロールの作成 (仕切りロール直下)
+# 1. 専用ロールの作成 (仕切りロール直下)
     @role_group.command(name="create", description="仕切りロールの直下に専用ロールを作成します")
     @app_commands.describe(
         name="作成するロール名",
@@ -126,10 +126,16 @@ class SelfRoleManager(commands.Cog):
                 f"✅ [MyRole 作成完了] Role: {new_role.name} (ID: {new_role.id}) | Owner: {user.display_name}"
             )
 
-            await interaction.followup.send(
-                f"✅ 仕切りロール **{base_role.name}** の下に専用ロール **{new_role.name}** を作成し、あなたに付与しました！",
-                ephemeral=True,
+            msg = (
+                f"✅ **専用ロール「{new_role.name}」を作成しました！**\n\n"
+                "📌 **操作コマンドの使い方**\n"
+                "・メンバー追加: `/myrole add_member`（他のユーザーにロールを付与）\n"
+                "・メンバー外す: `/myrole remove_member`（他のユーザーからロールを外す）\n"
+                "・名前/色変更 : `/myrole edit`（ロールの表示設定を変更）\n"
+                "・ロール削除   : `/myrole delete`（作成したロールを削除）"
             )
+
+            await interaction.followup.send(msg, ephemeral=True)
         except discord.Forbidden:
             logger.error("❌ [MyRole Create] Botのロール権限が不足しています。")
             await interaction.followup.send(
