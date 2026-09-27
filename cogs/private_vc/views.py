@@ -1,17 +1,19 @@
 import logging
 import os
 import discord
-from discord.ui import Button, Modal, MentionableSelect, TextInput, UserSelect, View
+from discord.ui import Button, Modal, Select, TextInput, UserSelect, View
 from dotenv import load_dotenv
 
 from .utils import build_status_embed, save_vc_data
 
 load_dotenv()
 logger = logging.getLogger("DiscordBot")
+
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "0"))
+BASE_ROLE_ID = int(os.getenv("BASE_ROLE_ID", "0"))
 
 
-# --- VC参加者宛て一括DM送信モーダル ---
+# --- VC関係者へDM一括送信モーダル ---
 class SendVcDmModal(Modal):
 
     def __init__(self, channel: discord.VoiceChannel):
@@ -33,12 +35,10 @@ class SendVcDmModal(Modal):
         guild = interaction.guild
         target_members = set()
 
-        # 1. 現在VCに接続中のメンバーを追加
         for m in self.channel.members:
             if not m.bot:
                 target_members.add(m)
 
-        # 2. 権限(overwrites)に登録されているユーザーID / ロールからメンバーを抽出
         for target, overwrite in self.channel.overwrites.items():
             if target == guild.default_role:
                 continue
@@ -122,6 +122,9 @@ class CreateRoomModal(Modal):
             )
 
         overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False, connect=False
+            ),
             member: discord.PermissionOverwrite(
                 view_channel=True,
                 connect=True,
@@ -132,13 +135,7 @@ class CreateRoomModal(Modal):
             )
         }
 
-        if self.is_hidden:
-            overwrites[guild.default_role] = discord.PermissionOverwrite(
-                view_channel=False, connect=False
-            )
-            prefix = "🔒 "
-        else:
-            prefix = "🔊 "
+        prefix = "🔒 " if self.is_hidden else "🔊 "
 
         try:
             channel = await guild.create_voice_channel(
@@ -365,74 +362,101 @@ class VcControlView(View):
         )
         await self.update_panel(interaction, msg)
 
-    # ➕ 招待 / 解除 トグルボタン（案2適用）
+    # ➕ 招待 / 解除 ボタン (仕切りロール以下のロールのみ選択肢に抽出)
     @discord.ui.button(
         label="➕ 招待 / 解除", style=discord.ButtonStyle.primary, row=1
     )
     async def toggle_invite_target(
         self, interaction: discord.Interaction, button: Button
     ):
+        guild = interaction.guild
+
+        # 1. 基準となる仕切りロールの特定
+        base_role = guild.get_role(BASE_ROLE_ID)
+        if not base_role:
+            base_role = discord.utils.get(guild.roles, name="---この以下自動ロール---")
+
+        if not base_role:
+            return await interaction.response.send_message(
+                "❌ 基準となる仕切りロール（---この以下自動ロール---）が見つかりません。",
+                ephemeral=True,
+            )
+
+        # 2. 仕切りロールより下位のロールのみを抽出 (位置番号が base_role.position より小さいロール)
+        sub_roles = [
+            r for r in guild.roles
+            if r.position < base_role.position and r != guild.default_role
+        ]
+
+        if not sub_roles:
+            return await interaction.response.send_message(
+                "❌ 招待候補となるロールがありません。仕切りロールの下にロールを作成してください。",
+                ephemeral=True,
+            )
+
+        # 3. 候補選択用ドロップダウンメニューの生成
+        options = [
+            discord.SelectOption(label=r.name, value=str(r.id))
+            for r in sub_roles[:25] # Discordの仕様上最大25件
+        ]
+
         select_view = View()
-        entity_select = MentionableSelect(
-            placeholder="招待または解除したいユーザー/ロールを選択",
+        role_select = Select(
+            placeholder="招待または解除したいロールを選択してください",
+            options=options,
             min_values=1,
             max_values=1,
         )
 
         async def callback(select_interaction: discord.Interaction):
             await select_interaction.response.defer(ephemeral=True)
-            target = entity_select.values[0]
-            guild = interaction.guild
-            user = interaction.user
+            target_role_id = int(role_select.values[0])
+            target_role = guild.get_role(target_role_id)
 
-            target_name = target.name if isinstance(target, discord.Role) else target.display_name
-            current_overwrite = self.channel.overwrites_for(target)
+            if not target_role:
+                return await select_interaction.followup.send(
+                    "❌ 選択されたロールが見つかりません。", ephemeral=True
+                )
 
-            # 💡 判定: すでに権限が付与されている場合は「招待解除」
+            current_overwrite = self.channel.overwrites_for(target_role)
+
+            # 💡 既に招待済みの場合は権限を削除（招待解除）
             if current_overwrite.view_channel is True or current_overwrite.connect is True:
                 try:
-                    await self.channel.set_permissions(target, overwrite=None)
-                    result_msg = f"🗑️ **{target_name}** の招待権限を解除しました。"
+                    await self.channel.set_permissions(target_role, overwrite=None)
+                    result_msg = f"🗑️ ロール **{target_role.name}** の招待権限を解除しました。"
                 except Exception as e:
                     logger.error(f"❌ 招待解除処理エラー: {e}", exc_info=True)
                     return await select_interaction.followup.send(
                         "❌ 招待解除処理中にエラーが発生しました。", ephemeral=True
                     )
-            # 💡 未招待の場合は「招待追加＆DM送信」
+            # 💡 未招待の場合は権限を付与＆そのロールのメンバーにDM送信
             else:
                 try:
                     await self.channel.set_permissions(
-                        target, view_channel=True, connect=True
+                        target_role, view_channel=True, connect=True
                     )
 
                     vc_link = f"https://discord.com/channels/{guild.id}/{self.channel.id}"
                     dm_content = (
-                        f"{user.display_name} さんから {guild.name} の一時VCへ招待されました。\n"
+                        f"{interaction.user.display_name} さんから {guild.name} の一時VCへ招待されました。\n"
                         f"VC: #{self.channel.name}\n"
                         f"参加リンク: {vc_link}"
                     )
 
                     success_count = 0
                     failed_count = 0
+                    members = [m for m in target_role.members if not m.bot]
 
-                    if isinstance(target, discord.Member):
-                        if not target.bot:
-                            try:
-                                await target.send(dm_content)
-                                success_count += 1
-                            except discord.Forbidden:
-                                failed_count += 1
-                    elif isinstance(target, discord.Role):
-                        members = [m for m in target.members if not m.bot]
-                        for m in members:
-                            try:
-                                await m.send(dm_content)
-                                success_count += 1
-                            except discord.Forbidden:
-                                failed_count += 1
+                    for m in members:
+                        try:
+                            await m.send(dm_content)
+                            success_count += 1
+                        except discord.Forbidden:
+                            failed_count += 1
 
                     result_msg = (
-                        f"✅ **{target_name}** に招待権限を付与し、DMで通知を送りました！\n"
+                        f"✅ ロール **{target_role.name}** に招待権限を付与し、所属メンバーへDM通知を送りました！\n"
                         f"📨 DM送信結果: 成功 **{success_count}** 件 / 失敗（受信拒否など） **{failed_count}** 件"
                     )
                 except Exception as e:
@@ -445,10 +469,10 @@ class VcControlView(View):
                 result_msg, ephemeral=True
             )
 
-        entity_select.callback = callback
-        select_view.add_item(entity_select)
+        role_select.callback = callback
+        select_view.add_item(role_select)
         await interaction.response.send_message(
-            "対象を選択してください（招待済みなら解除、未招待なら追加されます）:",
+            "対象ロールを選択してください（招待済みなら解除、未招待なら追加されます）:",
             view=select_view,
             ephemeral=True,
         )
@@ -587,7 +611,7 @@ class VcControlView(View):
             await select_interaction.followup.send(msg, ephemeral=True)
 
         user_select.callback = callback
-        select_view.add_item(user_select)
+        select_view.add_item(select_view)
         await interaction.response.send_message(
             "新しいオーナーを選択してください:", view=select_view, ephemeral=True
         )
